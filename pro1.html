@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>NearbyCare — Prototype</title>
+  <style>
+    :root{--accent:#2b8cff;--danger:#e63946;--muted:#666;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;margin:0;color:#111}
+    header{background:linear-gradient(90deg,var(--accent),#4aa3ff);color:#fff;padding:14px 18px}
+    header h1{margin:0;font-size:18px}
+    main{display:grid;grid-template-columns:1fr 360px;gap:12px;padding:12px;height:calc(100vh - 66px)}
+    .panel{background:#fff;border-radius:8px;box-shadow:0 6px 18px rgba(10,10,10,0.06);padding:12px;overflow:auto}
+    #map {height:100%;min-height:480px;border-radius:8px}
+    .controls button{margin:6px 6px 6px 0;padding:8px 10px;border-radius:6px;border:1px solid #ddd;background:#fafafa;cursor:pointer}
+    .btn-primary{background:var(--accent);color:#fff;border:none}
+    .btn-danger{background:var(--danger);color:#fff;border:none}
+    .place-item{padding:8px;border-bottom:1px solid #f1f1f1}
+    label{display:block;font-weight:600;margin-top:8px}
+    input[type="text"], textarea{width:100%;padding:8px;margin-top:6px;border-radius:6px;border:1px solid #ddd}
+    .small{font-size:13px;color:var(--muted)}
+    footer{padding:10px;text-align:center;color:var(--muted);font-size:13px}
+    .pill{display:inline-block;background:#f4faff;padding:6px 8px;border-radius:999px;margin-right:6px;font-weight:600}
+    .danger-banner{background:#fff0f0;border-left:4px solid var(--danger);padding:8px;margin:8px 0;border-radius:6px}
+    @media (max-width:980px){main{grid-template-columns:1fr;grid-auto-rows:min-content;height:auto} #map{min-height:320px}}
+  </style>
+  <!-- ====== Configuration ======
+       Replace GOOGLE_MAPS_API_KEY with your key if you want real Places & Maps.
+       If you do not set the key below the app will use mocked data for demonstration.
+  -->
+  <script>
+    // if you have a Google Maps API key, paste it here (or leave empty to use mock data)
+    const GOOGLE_MAPS_API_KEY = ''; // <-- PUT YOUR KEY BETWEEN THE QUOTES
+  </script>
+</head>
+<body>
+  <header>
+    <h1>NearbyCare — Find hospitals, pharmacies & quick triage (prototype)</h1>
+    <div class="small">Prototype UI: image inference & inventory are mocked. Replace with backend integrations for production.</div>
+  </header>
+
+  <main>
+    <!-- Map + controls -->
+    <div class="panel" style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <button id="btn-locate" class="btn-primary">📍 Use my location</button>
+          <button id="btn-accident" style="background:#ffbf69;border:none;padding:8px;border-radius:6px">⚠️ Simulate Accident</button>
+        </div>
+        <div class="small">Tip: Allow location for best results</div>
+      </div>
+
+      <div id="map" aria-label="Map area">Loading map...</div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="place-type" style="padding:8px;border-radius:6px;border:1px solid #ddd">
+          <option value="hospital">Hospital / Emergency</option>
+          <option value="clinic">Clinic</option>
+          <option value="pharmacy" selected>Pharmacy</option>
+        </select>
+        <button id="btn-find" class="btn-primary">Find nearby</button>
+        <button id="btn-refresh" title="Reload list">🔄</button>
+        <div id="status" class="small" style="margin-left:auto"></div>
+      </div>
+
+      <div id="places-list" style="max-height:220px;overflow:auto"></div>
+    </div>
+
+    <!-- Right panel: actions -->
+    <div class="panel">
+      <h3>Quick actions</h3>
+
+      <label>Upload injury image (mock analysis)</label>
+      <input type="file" id="injury-image" accept="image/*"/>
+      <div id="image-result" class="small" style="margin-top:8px"></div>
+
+      <hr/>
+
+      <label>Describe symptoms</label>
+      <textarea id="symptoms" rows="3" placeholder="e.g. chest pain, fever, cough"></textarea>
+      <button id="btn-check-symptoms" class="btn-primary" style="margin-top:8px">Check symptoms</button>
+      <div id="symptom-result" style="margin-top:8px"></div>
+
+      <hr/>
+
+      <label>Check medicine availability nearby</label>
+      <input type="text" id="medicine-name" placeholder="Medicine name (e.g. paracetamol)"/>
+      <button id="btn-check-medicine" style="margin-top:8px" class="btn-primary">Check availability</button>
+      <div id="medicine-result" style="margin-top:8px"></div>
+
+      <hr/>
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="btn-emergency" class="btn-danger" style="flex:1">EMERGENCY — Call local services</button>
+      </div>
+
+      <div style="margin-top:12px" class="small">
+        <strong>Disclaimer:</strong> This prototype provides informational suggestions only — not medical diagnosis. For emergencies call local emergency services immediately.
+      </div>
+    </div>
+  </main>
+
+  <footer>Prototype — Integrate with real ML & inventory APIs to make production-capable.</footer>
+
+  <script>
+    // ---------- Mock data & helpers (used when no API key provided) ----------
+    const MOCK_STORES = [
+      { id: 's1', name: 'City Hospital', type: 'hospital', latOffset: 0.006, lonOffset: 0.003, phone: '+91-80-100000' },
+      { id: 's2', name: 'Green Pharmacy', type: 'pharmacy', latOffset: 0.002, lonOffset: -0.0015, phone: '+91-80-200000' },
+      { id: 's3', name: 'Downtown Clinic', type: 'clinic', latOffset: -0.003, lonOffset: 0.001, phone: '+91-80-300000' }
+    ];
+
+    const MOCK_INVENTORY = {
+      'Green Pharmacy': ['paracetamol', 'ibuprofen', 'amoxicillin'],
+      'City Hospital': ['paracetamol', 'iv-fluids'],
+      'Downtown Clinic': ['paracetamol']
+    };
+
+    // Basic mock symptom-to-suggestions mapping
+    function symptomTriage(symptoms) {
+      const s = symptoms.toLowerCase();
+      if (!s.trim()) return { level: 'unknown', advice: ['Please describe your symptoms.'] };
+      if (s.includes('chest') || s.includes('breath')) {
+        return { level: 'emergency', advice: ['Call emergency services immediately', 'Keep the person calm and still'] };
+      }
+      if (s.includes('fever') || s.includes('headache') || s.includes('pain')) {
+        return { level: 'self-care', advice: ['Rest', 'Hydrate', 'Take OTC analgesic like Paracetamol (if suitable)'], meds: ['paracetamol'] };
+      }
+      return { level: 'see-doctor', advice: ['Consider seeing a local clinic or doctor for diagnosis'], meds: [] };
+    }
+
+    // Very small mock image "inference" - non-diagnostic
+    function mockImageInference(file) {
+      // heuristics: choose random body part & severity for demo
+      const parts = ['arm','leg','head','face','torso','hand'];
+      const severities = ['minor','moderate','severe'];
+      const body = parts[Math.floor(Math.random()*parts.length)];
+      const severity = (Math.random() > 0.85) ? 'severe' : (Math.random() > 0.5 ? 'moderate' : 'minor');
+      const precautions = {
+        minor: ['Clean wound with clean water', 'Apply antiseptic', 'Cover with sterile dressing'],
+        moderate: ['Control bleeding with pressure', 'Seek medical care', 'Avoid moving the injured part'],
+        severe: ['Call emergency services immediately', 'Do not remove embedded objects', 'Prioritize rapid transport to hospital']
+      };
+      return { body_part: body, severity, confidence: (0.6 + Math.random()*0.3).toFixed(2), precautions: precautions[severity] };
+    }
+
+    // ---------- Map / Places logic ----------
+    let map, userMarker, placeMarkers = [], userLocation = null;
+
+    async function initMap() {
+      const mapContainer = document.getElementById('map');
+      mapContainer.innerHTML = '';
+      if (!GOOGLE_MAPS_API_KEY) {
+        // simple fallback map: use leaflet-like embedded static placeholder
+        mapContainer.style.display = 'flex';
+        mapContainer.style.alignItems = 'center';
+        mapContainer.style.justifyContent = 'center';
+        mapContainer.style.color = '#444';
+        mapContainer.innerHTML = '<div style="text-align:center;"><strong>Map disabled (no API key)</strong><div class="small">Provide a Google Maps API key in the page to enable the interactive map.</div></div>';
+        return;
+      }
+      // load Google Maps script dynamically
+      if (!window.google || !window.google.maps) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
+          s.defer = true;
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('Google Maps failed to load — check API key & network'));
+          document.head.appendChild(s);
+        });
+      }
+
+      map = new google.maps.Map(document.getElementById('map'), { center: { lat: 12.9716, lng: 77.5946 }, zoom: 14, disableDefaultUI: false });
+    }
+
+    function clearPlaceMarkers() {
+      placeMarkers.forEach(m => m.setMap(null));
+      placeMarkers = [];
+    }
+
+    function addPlaceMarker(place) {
+      if (!map || !window.google || !window.google.maps) return;
+      const marker = new google.maps.Marker({
+        position: { lat: place.lat, lng: place.lon },
+        map,
+        title: place.name
+      });
+      const inf = new google.maps.InfoWindow({ content: `<strong>${place.name}</strong><div class="small">${place.type}<br/>${place.phone || ''}</div>` });
+      marker.addListener('click', () => inf.open(map, marker));
+      placeMarkers.push(marker);
+    }
+
+    // If Google key present, use Google Places. Otherwise use mock stores (offset near user's location).
+    async function findNearbyPlaces(type = 'pharmacy') {
+      setStatus('Searching nearby ' + type + '...');
+      clearList();
+      clearPlaceMarkers();
+      if (!userLocation) {
+        setStatus('No user location — click "Use my location" first');
+        return;
+      }
+
+      if (GOOGLE_MAPS_API_KEY && window.google && window.google.maps && window.google.maps.places) {
+        const service = new google.maps.places.PlacesService(map);
+        const req = { location: new google.maps.LatLng(userLocation.lat, userLocation.lon), radius: 5000, type: type };
+        service.nearbySearch(req, (results, status) => {
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !results) {
+            setStatus('No places found or API error');
+            return;
+          }
+          const list = results.slice(0, 20).map(r => ({
+            id: r.place_id, name: r.name, type: type, lat: r.geometry.location.lat(), lon: r.geometry.location.lng(), phone: (r.vicinity || '')
+          }));
+          renderPlaceList(list);
+          list.forEach(addPlaceMarker);
+          setStatus('Found ' + list.length + ' places');
+        });
+      } else {
+        // mock: generate stores around user
+        const mock = MOCK_STORES.filter(s => type === 'pharmacy' ? s.type === 'pharmacy' : (type === 'hospital' ? s.type === 'hospital' : s.type === 'clinic'));
+        const populated = mock.map(m => ({ id: m.id, name: m.name, type: m.type, lat: userLocation.lat + (m.latOffset), lon: userLocation.lon + (m.lonOffset), phone: m.phone }));
+        renderPlaceList(populated);
+        setStatus('Using mock store data (' + populated.length + ')');
+      }
+    }
+
+    function renderPlaceList(list) {
+      const container = document.getElementById('places-list');
+      container.innerHTML = '';
+      list.forEach(p => {
+        const el = document.createElement('div');
+        el.className = 'place-item';
+        el.innerHTML = `<strong>${p.name}</strong> <span class="small">(${p.type})</span><div class="small">${p.phone || ''}</div>
+                        <div style="margin-top:6px"><button class="small" onclick='focusPlace(${p.lat},${p.lon})'>➡️ Show</button>
+                        <button class="small" onclick='callNumber("${p.phone || ''}")'>📞 Call</button></div>`;
+        container.appendChild(el);
+      });
+    }
+
+    function focusPlace(lat, lon) {
+      if (map && window.google && window.google.maps) {
+        map.panTo({ lat, lng: lon });
+        map.setZoom(15);
+      } else {
+        alert('Map is not available in mock mode.');
+      }
+    }
+
+    function callNumber(phone) {
+      if (!phone) { alert('Phone number not available'); return; }
+      window.open('tel:' + phone);
+    }
+
+    // ---------- Location ----------
+    async function useMyLocation() {
+      setStatus('Getting location...');
+      try {
+        const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 10000 }));
+        const coords = pos.coords;
+        userLocation = { lat: coords.latitude, lon: coords.longitude };
+        setStatus('Location detected: ' + coords.latitude.toFixed(5) + ', ' + coords.longitude.toFixed(5));
+        placeUserMarker();
+        if (map && window.google && window.google.maps) {
+          map.setCenter({ lat: coords.latitude, lng: coords.longitude });
+          map.setZoom(15);
+        }
+        // auto-find nearby pharmacies
+        await findNearbyPlaces(document.getElementById('place-type').value || 'pharmacy');
+      } catch (e) {
+        console.error(e);
+        setStatus('Unable to get location — allow location permissions or use secure origin (https).');
+        alert('Location error: ' + (e.message || e));
+      }
+    }
+
+    function placeUserMarker() {
+      if (map && window.google && window.google.maps) {
+        if (userMarker) userMarker.setMap(null);
+        userMarker = new google.maps.Marker({ position: { lat: userLocation.lat, lng: userLocation.lon }, map, title: 'You', icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: '#2b8cff', fillOpacity: 1, strokeWeight: 0 } });
+      }
+    }
+
+    // ---------- Accident simulation ----------
+    function simulateAccident() {
+      if (!userLocation) { alert('Set location first (Use my location).'); return; }
+      const accLat = userLocation.lat + 0.004; // small offset
+      const accLon = userLocation.lon + 0.002;
+      if (map && window.google && window.google.maps) {
+        const accMarker = new google.maps.Marker({ position: { lat: accLat, lng: accLon }, map, title: 'Accident (simulated)', icon: { url: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><circle cx="16" cy="16" r="14" fill="%23ffbf69" stroke="%23e63946" stroke-width="3"/></svg>' } });
+        map.panTo({ lat: accLat, lng: accLon });
+      } else {
+        alert('Accident simulated at nearby location (mock). Showing nearest hospitals/clinics.');
+      }
+      // find nearest hospitals
+      showNearestForAccident(accLat, accLon);
+    }
+
+    async function showNearestForAccident(lat, lon) {
+      // For prototype: call findNearby with "hospital" type and show first few
+      const type = 'hospital';
+      if (GOOGLE_MAPS_API_KEY && window.google && window.google.maps && window.google.maps.places) {
+        // use Places service with location set to accident
+        const service = new google.maps.places.PlacesService(map);
+        const req = { location: new google.maps.LatLng(lat, lon), radius: 7000, type: type };
+        service.nearbySearch(req, (results, status) => {
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !results) {
+            setStatus('No hospitals found near accident (or API error).');
+            return;
+          }
+          const top = results.slice(0,5).map(r => ({ id: r.place_id, name: r.name, lat: r.geometry.location.lat(), lon: r.geometry.location.lng(), phone: r.vicinity }));
+          renderPlaceList(top);
+          top.forEach(addPlaceMarker);
+          setStatus('Nearest emergency facilities shown');
+        });
+      } else {
+        // mock: use local City Hospital first
+        const mock = MOCK_STORES.filter(s => s.type === 'hospital').map(m => ({ id: m.id, name: m.name, type: m.type, lat: userLocation.lat + m.latOffset, lon: userLocation.lon + m.lonOffset, phone: m.phone }));
+        renderPlaceList(mock);
+        setStatus('Mock: nearest hospitals shown for simulated accident');
+      }
+    }
+
+    // ---------- Image upload & inference (mock) ----------
+    document.getElementById('injury-image').addEventListener('change', async (ev) => {
+      const f = ev.target.files[0];
+      if (!f) return;
+      document.getElementById('image-result').innerHTML = 'Analyzing image (mock)...';
+      // In a real app: upload via fetch to backend ML endpoint and receive structured response.
+      // Here we run a mock inference.
+      await new Promise(r => setTimeout(r, 700));
+      const inf = mockImageInference(f);
+      // find recommended places for that body part (mock: hospital + pharmacy)
+      const rec = MOCK_STORES.slice(0,2).map(s => `<div class="pill">${s.name}</div>`).join(' ');
+      document.getElementById('image-result').innerHTML = `<strong>Body part:</strong> ${inf.body_part} &nbsp; <strong>Severity:</strong> ${inf.severity} (confidence ${inf.confidence}) 
+        <div style="margin-top:6px"><strong>Precautions:</strong><ul>${inf.precautions.map(p => `<li>${p}</li>`).join('')}</ul></div>
+        <div><strong>Suggested nearby facilities:</strong> ${rec}</div>`;
+    });
+
+    // ---------- Symptom check ----------
+    document.getElementById('btn-check-symptoms').addEventListener('click', () => {
+      const s = document.getElementById('symptoms').value || '';
+      const out = symptomTriage(s);
+      const el = document.getElementById('symptom-result');
+      el.innerHTML = `<div><strong>Triage:</strong> ${out.level}</div>
+                      <div style="margin-top:6px"><strong>Advice:</strong><ul>${out.advice.map(a => `<li>${a}</li>`).join('')}</ul></div>`;
+      if (out.meds && out.meds.length) {
+        el.innerHTML += `<div style="margin-top:8px"><strong>Suggested (non-prescriptive):</strong> ${out.meds.join(', ')}
+        <div style="margin-top:6px"><button onclick="checkMedicineAvailability('${out.meds[0]}')">Check '${out.meds[0]}' nearby</button></div></div>`;
+      }
+      if (out.level === 'emergency') {
+        el.innerHTML = `<div class="danger-banner"><strong>Emergency suggested:</strong> ${out.advice[0]}</div>` + el.innerHTML;
+      }
+    });
+
+    // ---------- Medicine availability ----------
+    document.getElementById('btn-check-medicine').addEventListener('click', () => {
+      const med = document.getElementById('medicine-name').value.trim();
+      if (!med) { alert('Type a medicine name'); return; }
+      checkMedicineAvailability(med);
+    });
+
+    window.checkMedicineAvailability = function(medName) {
+      const el = document.getElementById('medicine-result');
+      el.innerHTML = 'Checking availability (mock)...';
+      setTimeout(() => {
+        // Use mock inventory search (case-insensitive)
+        const found = Object.entries(MOCK_INVENTORY).filter(([store, meds]) => meds.some(m => m.toLowerCase().includes(medName.toLowerCase())));
+        if (!found.length) {
+          el.innerHTML = `<div>No nearby partnered stores report "${medName}" available (mock). Try calling local pharmacies.</div>`;
+        } else {
+          el.innerHTML = `<div>Availability for <strong>${medName}</strong> (mock):</div><ul>` + found.map(([store, meds]) => `<li><strong>${store}</strong> — ${meds.filter(m=>m.toLowerCase().includes(medName.toLowerCase())).join(', ')} <button onclick="alert('Call ${store}')">Call</button></li>`).join('') + '</ul>';
+        }
+      }, 700);
+    };
+
+    // ---------- UI helpers ----------
+    function setStatus(text) { document.getElementById('status').textContent = text; }
+    function clearList() { document.getElementById('places-list').innerHTML = ''; }
+
+    // ---------- Button events ----------
+    document.getElementById('btn-locate').addEventListener('click', useMyLocation);
+    document.getElementById('btn-find').addEventListener('click', () => findNearbyPlaces(document.getElementById('place-type').value));
+    document.getElementById('btn-accident').addEventListener('click', simulateAccident);
+    document.getElementById('btn-emergency').addEventListener('click', () => alert('Call your local emergency number now!'));
+    document.getElementById('btn-refresh').addEventListener('click', () => {
+      if (userLocation) findNearbyPlaces(document.getElementById('place-type').value);
+      else setStatus('Click Use my location first');
+    });
+
+    // Initialize map area
+    (async () => {
+      try {
+        await initMap();
+        setStatus('Ready. Click "Use my location".');
+      } catch (e) {
+        console.warn(e);
+        setStatus('Map not available — using mock mode.');
+      }
+    })();
+  </script>
+</body>
+</html>
